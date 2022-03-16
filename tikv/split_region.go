@@ -268,27 +268,33 @@ func (s *KVStore) scatterRegion(bo *Backoffer, regionID uint64, tableID *int64) 
 }
 
 func (s *KVStore) SplitAndScatterRegions(ctx context.Context, splitKeys [][]byte, tableID *int64) (regionID []uint64, err error) {
-	opts := make([]pd.RegionsOption, 0, 1)
-	if tableID != nil {
-		opts = append(opts, pd.WithGroup(fmt.Sprintf("%v", *tableID)))
-	}
+	bo := retry.NewBackofferWithVars(ctx, int(math.Min(float64(len(splitKeys))*splitRegionBackoff, maxSplitRegionsBackoff)), nil)
+	var resp *pdpb.SplitAndScatterRegionsResponse
+	for {
+		opts := make([]pd.RegionsOption, 0, 1)
+		if tableID != nil {
+			opts = append(opts, pd.WithGroup(fmt.Sprintf("%v", *tableID)))
+		}
 
-	// Encode keys
-	for i, key := range splitKeys {
-		splitKeys[i] = codec.EncodeBytes([]byte(nil), key)
-	}
+		// Encode keys
+		for i, key := range splitKeys {
+			splitKeys[i] = codec.EncodeBytes([]byte(nil), key)
+		}
 
-	resp, err := s.pdClient.SplitAndScatterRegions(ctx, splitKeys, opts...)
+		resp, err = s.pdClient.SplitAndScatterRegions(ctx, splitKeys, opts...)
 
-	if err != nil {
-		return nil, errors.Trace(err)
+		err = bo.Backoff(retry.BoPDRPC, errors.Errorf(err.Error()))
+		if err == nil {
+			break
+		} else {
+			return nil, err
+		}
 	}
 
 	logutil.BgLogger().Info("Split and scatter regions complete",
 		zap.Int("New regions count", len(resp.RegionsId)),
 		zap.Uint64("Split finishedPercentage", resp.SplitFinishedPercentage),
 		zap.Uint64("Scatter finishedPercentage", resp.ScatterFinishedPercentage))
-
 	return resp.RegionsId, nil
 }
 
