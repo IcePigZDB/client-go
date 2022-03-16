@@ -54,6 +54,7 @@ import (
 	"github.com/tikv/client-go/v2/tikvrpc"
 	"github.com/tikv/client-go/v2/txnkv/rangetask"
 	"github.com/tikv/client-go/v2/util"
+	"github.com/tikv/client-go/v2/util/codec"
 	pd "github.com/tikv/pd/client"
 	"go.uber.org/zap"
 )
@@ -264,6 +265,31 @@ func (s *KVStore) scatterRegion(bo *Backoffer, regionID uint64, tableID *int64) 
 	logutil.BgLogger().Debug("scatter region complete",
 		zap.Uint64("regionID", regionID))
 	return nil
+}
+
+func (s *KVStore) SplitAndScatterRegions(ctx context.Context, splitKeys [][]byte, tableID *int64) (regionID []uint64, err error) {
+	opts := make([]pd.RegionsOption, 0, 1)
+	if tableID != nil {
+		opts = append(opts, pd.WithGroup(fmt.Sprintf("%v", *tableID)))
+	}
+
+	// Encode keys
+	for i, key := range splitKeys {
+		splitKeys[i] = codec.EncodeBytes([]byte(nil), key)
+	}
+
+	resp, err := s.pdClient.SplitAndScatterRegions(ctx, splitKeys, opts...)
+
+	if err != nil {
+		return nil, errors.Trace(err)
+	}
+
+	logutil.BgLogger().Info("Split and scatter regions complete",
+		zap.Int("New regions count", len(resp.RegionsId)),
+		zap.Uint64("Split finishedPercentage", resp.SplitFinishedPercentage),
+		zap.Uint64("Scatter finishedPercentage", resp.ScatterFinishedPercentage))
+
+	return resp.RegionsId, nil
 }
 
 const waitScatterRegionFinishBackoff = 120000
